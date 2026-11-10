@@ -12,7 +12,7 @@ public class Submission
 	public String type;      // "loot" or "pet"
 	public String source;    // boss / chest name
 	public List<Item> items = new ArrayList<>();
-	public List<String> party = new ArrayList<>();
+	public List<PartyMember> party = new ArrayList<>();
 	public String screenshot; // base64 jpeg, added later
 
 	public static class Item
@@ -26,6 +26,19 @@ public class Submission
 			this.name = name;
 			this.quantity = quantity;
 			this.unitValue = unitValue;
+		}
+	}
+
+	/** Someone who was at the kill. */
+	public static class PartyMember
+	{
+		public String name;
+		public boolean inClan;
+
+		public PartyMember(String name, boolean inClan)
+		{
+			this.name = name;
+			this.inClan = inClan;
 		}
 	}
 

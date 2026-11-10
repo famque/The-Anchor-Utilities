@@ -2,12 +2,16 @@ package com.anchorutilities.events;
 
 import com.anchorutilities.api.AnchorApiClient;
 import com.anchorutilities.model.Submission;
+import com.anchorutilities.service.PartyService;
 import com.anchorutilities.service.ScreenshotService;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import net.runelite.api.ChatMessageType;
@@ -36,7 +40,7 @@ import net.runelite.http.api.loottracker.LootRecordType;
  * One place for every kind of drop the clan cares about:
  *  - NPC kills (NpcLootReceived, plus Yama via ServerNpcLoot)
  *  - Chests and other non-NPC loot: raids, Barrows, clue caskets, etc. (LootReceived)
- *  - Pets (game chat messages)
+ *  - Pets (game chat messages; the name comes from the clan broadcast or the boss)
  *
  * Loot items are submitted only when their GE value per item is at least
  * MIN_VALUE. Pets are always submitted.
@@ -51,19 +55,93 @@ public class LootListener
 
 	/** How long after a kill or chest a pet message is still linked to it. */
 	private static final long PET_SOURCE_WINDOW_MS = 10_000L;
-	/** Ticks to wait before reporting a pet, so the matching loot event can arrive first. */
-	private static final int PET_DELAY_TICKS = 2;
+	/** Ticks to wait before reporting a pet, so the loot event and clan broadcast can arrive first. */
+	private static final int PET_DELAY_TICKS = 3;
+
+	/**
+	 * Clan broadcast, e.g.
+	 * "Godly has a funny feeling like he's being followed: Little nightmare at 1,234 kills."
+	 * "Godly feels something weird sneaking into his backpack: Vorki at 500 kills."
+	 */
+	private static final Pattern PET_BROADCAST = Pattern.compile(
+			"^(?<player>[\\w\\s-]+?) (?:has a funny feeling like .+?(?:being followed|would have been followed)"
+					+ "|feels something weird sneaking into .+? backpack): (?<pet>.+?)(?: at [\\d,]+ .*| from .*)?[.!]*$",
+			Pattern.CASE_INSENSITIVE);
+
+	/** Boss or raid name -> its pet. Used when no clan broadcast names the pet. */
+	private static final Map<String, String> BOSS_PETS = Map.ofEntries(
+			Map.entry("abyssal sire", "Abyssal orphan"),
+			Map.entry("alchemical hydra", "Ikkle hydra"),
+			Map.entry("amoxliatl", "Moxi"),
+			Map.entry("araxxor", "Nid"),
+			Map.entry("artio", "Callisto cub"),
+			Map.entry("callisto", "Callisto cub"),
+			Map.entry("calvarion", "Vet'ion jr."),
+			Map.entry("vetion", "Vet'ion jr."),
+			Map.entry("spindel", "Venenatis spiderling"),
+			Map.entry("venenatis", "Venenatis spiderling"),
+			Map.entry("cerberus", "Hellpuppy"),
+			Map.entry("chaos elemental", "Pet chaos elemental"),
+			Map.entry("chaos fanatic", "Pet chaos elemental"),
+			Map.entry("commander zilyana", "Pet zilyana"),
+			Map.entry("corporeal beast", "Pet dark core"),
+			Map.entry("dagannoth prime", "Pet dagannoth prime"),
+			Map.entry("dagannoth rex", "Pet dagannoth rex"),
+			Map.entry("dagannoth supreme", "Pet dagannoth supreme"),
+			Map.entry("doom of mokhaiotl", "Dom"),
+			Map.entry("duke sucellus", "Baron"),
+			Map.entry("general graardor", "Pet general graardor"),
+			Map.entry("giant mole", "Baby mole"),
+			Map.entry("grotesque guardians", "Noon"),
+			Map.entry("dusk", "Noon"),
+			Map.entry("kalphite queen", "Kalphite princess"),
+			Map.entry("king black dragon", "Prince black dragon"),
+			Map.entry("kraken", "Pet kraken"),
+			Map.entry("kreearra", "Pet kree'arra"),
+			Map.entry("kril tsutsaroth", "Pet k'ril tsutsaroth"),
+			Map.entry("nex", "Nexling"),
+			Map.entry("the nightmare", "Little nightmare"),
+			Map.entry("phosanis nightmare", "Little nightmare"),
+			Map.entry("phantom muspah", "Muphin"),
+			Map.entry("sarachnis", "Sraracha"),
+			Map.entry("scorpia", "Scorpia's offspring"),
+			Map.entry("scurrius", "Scurry"),
+			Map.entry("skotizo", "Skotos"),
+			Map.entry("sol heredit", "Smol heredit"),
+			Map.entry("thermonuclear smoke devil", "Pet smoke devil"),
+			Map.entry("the hueycoatl", "Huberte"),
+			Map.entry("the leviathan", "Lil'viathan"),
+			Map.entry("the royal titans", "Bran"),
+			Map.entry("the whisperer", "Wisp"),
+			Map.entry("vardorvis", "Butch"),
+			Map.entry("vorkath", "Vorki"),
+			Map.entry("yama", "Yami"),
+			Map.entry("zulrah", "Pet snakeling"),
+			Map.entry("tztok jad", "TzRek-Jad"),
+			Map.entry("tzkal zuk", "Jal-nib-rek"),
+			Map.entry("the gauntlet", "Youngllef"),
+			Map.entry("the corrupted gauntlet", "Youngllef"),
+			Map.entry("crystalline hunllef", "Youngllef"),
+			Map.entry("corrupted hunllef", "Youngllef"),
+			Map.entry("tempoross", "Tiny tempor"),
+			Map.entry("wintertodt", "Phoenix"),
+			Map.entry("zalcano", "Smolcano")
+	);
 
 	@Inject private Client client;
 	@Inject private ItemManager itemManager;
 	@Inject private ChatMessageManager chatMessageManager;
 	@Inject private AnchorApiClient api;
 	@Inject private ScreenshotService screenshots;
+	@Inject private PartyService parties;
 
 	private String lastSource;
 	private long lastSourceAt;
 
 	private PendingPet pendingPet;
+
+	private String broadcastPetName;
+	private long broadcastPetAt;
 
 	// ---------------------------------------------------------------- NPC kills
 
@@ -105,6 +183,11 @@ public class LootListener
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
+		if (isClanBroadcast(event.getType()))
+		{
+			readPetBroadcast(event.getMessage());
+			return;
+		}
 		if (event.getType() != ChatMessageType.GAMEMESSAGE && event.getType() != ChatMessageType.SPAM)
 		{
 			return;
@@ -141,14 +224,35 @@ public class LootListener
 		PendingPet pet = pendingPet;
 		pendingPet = null;
 
-		boolean recent = lastSource != null && System.currentTimeMillis() - lastSourceAt <= PET_SOURCE_WINDOW_MS;
-		String source = recent ? lastSource : "Unknown source";
-		// The pet's name isn't in the game message; it will be filled in by a later improvement.
-		List<Submission.Item> items = Collections.singletonList(new Submission.Item("Unknown pet", 1, 0));
+		long now = System.currentTimeMillis();
+		boolean recentSource = lastSource != null && now - lastSourceAt <= PET_SOURCE_WINDOW_MS;
+		String source = recentSource ? lastSource : "Unknown source";
+
+		// 1. Clan broadcast names the pet.  2. Otherwise use the boss's pet.  3. Otherwise unknown.
+		String petName = null;
+		if (broadcastPetName != null && now - broadcastPetAt <= PET_SOURCE_WINDOW_MS)
+		{
+			petName = broadcastPetName;
+		}
+		else if (recentSource)
+		{
+			petName = petForSource(source);
+		}
+		broadcastPetName = null;
+
+		if (petName == null)
+		{
+			petName = "Unknown pet";
+		}
+		List<Submission.Item> items = Collections.singletonList(new Submission.Item(petName, 1, 0));
 		send("pet", "Pet (" + pet.kind + ")", source, items, 0);
 	}
 
-	/** Type ::anchorpet in chat to simulate a pet drop for testing. */
+	/**
+	 * Testing:
+	 *   ::anchorpet          simulates a pet; the name comes from the last boss you killed
+	 *   ::anchorpet Olmlet   also simulates a clan broadcast naming that pet
+	 */
 	@Subscribe
 	public void onCommandExecuted(CommandExecuted event)
 	{
@@ -157,6 +261,66 @@ public class LootListener
 			return;
 		}
 		pendingPet = new PendingPet("test", client.getTickCount());
+
+		String[] args = event.getArguments();
+		if (args != null && args.length > 0 && client.getLocalPlayer() != null)
+		{
+			String pet = String.join(" ", args);
+			readPetBroadcast(client.getLocalPlayer().getName()
+					+ " has a funny feeling like they're being followed: " + pet + " at 100 kills.");
+		}
+	}
+
+	/** Remembers the pet named in a clan broadcast, if the broadcast is about you. */
+	private void readPetBroadcast(String rawMessage)
+	{
+		String message = Text.removeTags(rawMessage).replace('\u00a0', ' ').replace('\u2019', '\'').trim();
+		Matcher matcher = PET_BROADCAST.matcher(message);
+		if (!matcher.matches() || !isLocalPlayer(matcher.group("player")))
+		{
+			return;
+		}
+		broadcastPetName = matcher.group("pet").trim();
+		broadcastPetAt = System.currentTimeMillis();
+	}
+
+	private boolean isLocalPlayer(String name)
+	{
+		if (name == null || client.getLocalPlayer() == null || client.getLocalPlayer().getName() == null)
+		{
+			return false;
+		}
+		String local = client.getLocalPlayer().getName().replace('\u00a0', ' ').trim();
+		return local.equalsIgnoreCase(name.trim());
+	}
+
+	private static boolean isClanBroadcast(ChatMessageType type)
+	{
+		return type == ChatMessageType.CLAN_MESSAGE
+				|| type == ChatMessageType.CLAN_GUEST_MESSAGE
+				|| type == ChatMessageType.CLAN_GIM_MESSAGE
+				|| type == ChatMessageType.FRIENDSCHATNOTIFICATION;
+	}
+
+	/** Looks up the pet for a boss or raid name. */
+	private static String petForSource(String source)
+	{
+		String key = source.toLowerCase(Locale.ROOT)
+				.replace("'", "").replace('\u2019', ' ').replace('-', ' ').replace(':', ' ')
+				.trim().replaceAll("\\s+", " ");
+		if (key.startsWith("chambers of xeric"))
+		{
+			return "Olmlet";
+		}
+		if (key.startsWith("theatre of blood"))
+		{
+			return "Lil' zik";
+		}
+		if (key.startsWith("tombs of amascut"))
+		{
+			return "Tumeken's guardian";
+		}
+		return BOSS_PETS.get(key);
 	}
 
 	// ---------------------------------------------------------------- Shared handling
@@ -192,6 +356,13 @@ public class LootListener
 		String summary = label + " from " + source + ": " + describe(items)
 				+ (totalValue > 0 ? " - Total " + gp(totalValue) : "");
 
+		List<Submission.PartyMember> party = "loot".equals(type) ? parties.currentParty() : new ArrayList<>();
+		if (!party.isEmpty())
+		{
+			long clan = party.stream().filter(m -> m.inClan).count();
+			summary += " [" + clan + " clan / " + party.size() + " total]";
+		}
+
 		if (!api.hasConnectCode())
 		{
 			sendChat(summary + " (not submitted: no connect code set)");
@@ -204,6 +375,7 @@ public class LootListener
 		submission.rsn = rsn == null ? null : rsn.replace('\u00a0', ' ');
 		submission.type = type;
 		submission.source = source;
+		submission.party = party;
 		submission.items = items;
 
 		sendChat("Submitting " + summary);
