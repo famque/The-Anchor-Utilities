@@ -2,6 +2,7 @@ package com.anchorutilities.events;
 
 import com.anchorutilities.api.AnchorApiClient;
 import com.anchorutilities.model.Submission;
+import com.anchorutilities.service.ScreenshotService;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -57,6 +58,7 @@ public class LootListener
 	@Inject private ItemManager itemManager;
 	@Inject private ChatMessageManager chatMessageManager;
 	@Inject private AnchorApiClient api;
+	@Inject private ScreenshotService screenshots;
 
 	private String lastSource;
 	private long lastSourceAt;
@@ -205,20 +207,26 @@ public class LootListener
 		submission.items = items;
 
 		sendChat("Submitting " + summary);
-		api.submit(submission, result ->
+		// Capture the screen first, then send the drop with the screenshot attached.
+		screenshots.capture(base64 ->
 		{
-			if (result.ok && result.submissionIds != null && !result.submissionIds.isEmpty())
+			submission.screenshot = base64;
+			api.submit(submission, result ->
 			{
-				sendChat("Submitted " + result.submissionIds.size() + " item(s) from " + source);
-			}
-			else if (result.ok)
-			{
-				sendChat("Not submitted: below the clan's minimum value");
-			}
-			else
-			{
-				sendChat("Submission failed: " + result.error);
-			}
+				if (result.ok && result.submissionIds != null && !result.submissionIds.isEmpty())
+				{
+					sendChat("Submitted " + result.submissionIds.size() + " item(s) from " + source
+							+ (base64 == null ? " (no screenshot)" : ""));
+				}
+				else if (result.ok)
+				{
+					sendChat("Not submitted: below the clan's minimum value");
+				}
+				else
+				{
+					sendChat("Submission failed: " + result.error);
+				}
+			});
 		});
 	}
 
