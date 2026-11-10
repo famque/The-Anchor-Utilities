@@ -1,5 +1,6 @@
 package com.anchorutilities;
 
+import com.anchorutilities.events.LootListener;
 import com.anchorutilities.ui.AnchorPanel;
 import com.google.inject.Provides;
 import java.awt.Color;
@@ -12,6 +13,7 @@ import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -21,16 +23,18 @@ import net.runelite.client.util.ImageUtil;
 
 @Slf4j
 @PluginDescriptor(
-	name = "The Anchor Utilities",
-	description = "Clan loot and pet submissions, points, and competitions for The Anchor",
-	tags = {"clan", "loot", "pvm", "pets", "competitions"}
+		name = "The Anchor Utilities",
+		description = "Clan loot and pet submissions, points, and competitions for The Anchor",
+		tags = {"clan", "loot", "pvm", "pets", "competitions"}
 )
 public class AnchorUtilitiesPlugin extends Plugin
 {
 	@Inject private Client client;
 	@Inject private ClientToolbar clientToolbar;
+	@Inject private EventBus eventBus;
 	@Inject private AnchorUtilitiesConfig config;
 	@Inject private AnchorPanel panel;
+	@Inject private LootListener lootListener;
 
 	private NavigationButton navButton;
 
@@ -38,18 +42,20 @@ public class AnchorUtilitiesPlugin extends Plugin
 	protected void startUp()
 	{
 		navButton = NavigationButton.builder()
-			.tooltip("The Anchor Utilities")
-			.icon(loadIcon())
-			.priority(5)
-			.panel(panel)
-			.build();
+				.tooltip("The Anchor Utilities")
+				.icon(loadIcon())
+				.priority(5)
+				.panel(panel)
+				.build();
 		clientToolbar.addNavigation(navButton);
+		eventBus.register(lootListener);
 		log.info("The Anchor Utilities started");
 	}
 
 	@Override
 	protected void shutDown()
 	{
+		eventBus.unregister(lootListener);
 		if (navButton != null)
 		{
 			clientToolbar.removeNavigation(navButton);
