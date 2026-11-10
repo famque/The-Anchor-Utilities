@@ -1,2 +1,2 @@
-# Example
-An example greeter plugin
+# The Anchor Utilities
+Plugin for The Anchor CC
